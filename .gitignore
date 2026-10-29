@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.streamlit/secrets.toml
+.env
+*.log
+data/raw/*
+!data/raw/.gitkeep
+outputs/*
+!outputs/README.md
+!outputs/.gitkeep
