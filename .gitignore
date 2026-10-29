@@ -12,3 +12,8 @@ data/raw/*
 outputs/*
 !outputs/README.md
 !outputs/.gitkeep
+# Local reader feedback is private app state; do not commit the database or SQLite sidecars.
+data/feedback.db
+data/feedback.db-shm
+data/feedback.db-wal
+data/feedback.db-journal

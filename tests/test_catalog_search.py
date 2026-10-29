@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.catalog_search import exclude_seen_editions, search_catalog
+from src.catalog_search import exclude_seen_editions, filter_feedback_recommendations, search_catalog
 
 
 def test_search_matches_partial_title_author_and_publisher_case_insensitively():
@@ -63,6 +63,19 @@ def test_format_labels_are_removed_when_comparing_editions():
         "author": ["A. Reader", "A. Reader"],
     })
     assert exclude_seen_editions(catalog.iloc[[1]], catalog, {"seen"}).empty
+
+
+def test_feedback_filter_hides_disliked_and_read_books_but_keeps_liked_books():
+    catalog = pd.DataFrame({
+        "book_id": ["read", "read-edition", "disliked", "liked", "keep"],
+        "title": ["The Quiet River (Paperback)", "The Quiet River (Hardcover)",
+                  "Another Story", "A Third Story", "A New Story"],
+        "author": ["A. Reader", "A. Reader", "B. Writer", "C. Author", "D. Author"],
+        "score": [0.9, 0.85, 0.8, 0.75, 0.7],
+    })
+    feedback = {"read": "read", "disliked": "dislike", "liked": "like"}
+    actual = filter_feedback_recommendations(catalog, catalog, feedback)
+    assert actual.book_id.tolist() == ["liked", "keep"]
 
 
 def test_recommendation_list_collapses_duplicate_editions_even_without_seen_books():

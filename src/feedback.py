@@ -5,12 +5,14 @@ persists locally in a small SQLite database on the reader's machine.
 """
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import sqlite3
 
-from .config import FEEDBACK_DB_PATH
+from .config import FEEDBACK_DB_PATH, LEGACY_FEEDBACK_DB_PATH
 
 VALID_FEEDBACK_TYPES = {"like", "dislike", "read"}
+LEGACY_MIGRATION_KEY = "desktop-feedback-db-v1"
 
 FEEDBACK_LABELS = {
     "like": "Like this book",
@@ -21,7 +23,7 @@ FEEDBACK_LABELS = {
 
 def _resolve_db_path(db_path: Path | str | None = None) -> str:
     if db_path is None:
-        db_path = FEEDBACK_DB_PATH
+        db_path = os.environ.get("READWISE_FEEDBACK_DB_PATH") or FEEDBACK_DB_PATH
     if str(db_path) != ":memory:":
         path = Path(db_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,6 +64,44 @@ def init_db(db_path: Path | str | None = None) -> str:
             ON book_feedback (feedback_type);
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_migrations (
+                migration_key TEXT PRIMARY KEY,
+                completed_at TEXT NOT NULL
+            );
+            """
+        )
+        legacy_path = Path(LEGACY_FEEDBACK_DB_PATH)
+        target_path = Path(resolved)
+        default_path = Path(FEEDBACK_DB_PATH)
+        if (db_path is None and target_path.resolve() == default_path.resolve()
+                and legacy_path.is_file() and target_path.resolve() != legacy_path.resolve()):
+            migrated = conn.execute(
+                "SELECT 1 FROM feedback_migrations WHERE migration_key = ?",
+                (LEGACY_MIGRATION_KEY,),
+            ).fetchone()
+            if not migrated:
+                try:
+                    legacy_conn = sqlite3.connect(f"file:{legacy_path}?mode=ro", uri=True, timeout=10.0)
+                    try:
+                        rows = legacy_conn.execute(
+                            "SELECT book_id, feedback_type, created_at, updated_at FROM book_feedback"
+                        ).fetchall()
+                    finally:
+                        legacy_conn.close()
+                except sqlite3.OperationalError:
+                    rows = []
+                for row in rows:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO book_feedback "
+                        "(book_id, feedback_type, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                        row,
+                    )
+                conn.execute(
+                    "INSERT INTO feedback_migrations (migration_key, completed_at) VALUES (?, ?)",
+                    (LEGACY_MIGRATION_KEY, datetime.now(timezone.utc).isoformat()),
+                )
         conn.commit()
     return resolved
 

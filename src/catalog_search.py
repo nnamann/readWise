@@ -90,3 +90,13 @@ def exclude_seen_editions(candidates: pd.DataFrame, catalog: pd.DataFrame,
     # Recommendation frames are already ranked; keep the highest-ranked edition per work.
     duplicate_work = known_author & candidate_keys.duplicated(keep="first")
     return result.loc[~duplicate_work].reset_index(drop=True)
+
+
+def filter_feedback_recommendations(candidates: pd.DataFrame, catalog: pd.DataFrame,
+                                    feedback_map: dict[str, str]) -> pd.DataFrame:
+    """Hide books the reader passed on or has already read; keep liked books visible."""
+    hidden_ids = {
+        str(book_id) for book_id, feedback_type in feedback_map.items()
+        if feedback_type in {"dislike", "read"}
+    }
+    return exclude_seen_editions(candidates, catalog, hidden_ids)

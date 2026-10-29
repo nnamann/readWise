@@ -37,6 +37,8 @@ If PowerShell blocks environment activation, use `\.venv\Scripts\python.exe -m p
 
 Open the local address printed by Streamlit (normally `http://localhost:8501`). Keep the terminal open while using the app; press Ctrl+C there to stop it. The virtual environment is created separately on each laptop and should not be copied.
 
+Reader feedback is stored separately from Book-Crossing data in a private local SQLite file at `~/Documents/Codex/ReadWise/feedback.db` by default. Set `READWISE_FEEDBACK_DB_PATH` to choose another local location. On first launch, existing feedback in `data/feedback.db` is copied into this private store.
+
 ### Sharing with a teammate
 
 Send the project folder (or a ZIP) with the source files, `requirements.txt`, `scripts/`, `src/`, `tests/`, and `data/raw/`. The two required files `BX-Books.csv` and `BX-Book-Ratings.csv` are large and excluded from Git; `scripts/prepare_data.py` validates local files but does not download them. If you do not share the dataset files, your teammate must obtain the Book-Crossing archive from the source documented in [data/README.md](data/README.md), extract it, and put the CSV files in `data/raw/` before following the setup steps. Check the dataset's research/non-commercial terms before redistribution. Do not send `.venv/` or Python cache folders.

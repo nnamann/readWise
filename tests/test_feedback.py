@@ -31,6 +31,7 @@ from src.feedback import (
     init_db,
     VALID_FEEDBACK_TYPES,
 )
+from src import feedback as feedback_module
 
 
 @pytest.fixture
@@ -141,6 +142,21 @@ def test_feedback_validation_and_edge_cases(temp_db):
     assert remove_feedback("", temp_db) is False
 
 
+def test_legacy_feedback_is_migrated_once_into_private_default_store(tmp_path, monkeypatch):
+    legacy_db = tmp_path / "project" / "feedback.db"
+    private_db = tmp_path / "private" / "feedback.db"
+    set_feedback("legacy-book", "read", legacy_db)
+    monkeypatch.setattr(feedback_module, "LEGACY_FEEDBACK_DB_PATH", legacy_db)
+    monkeypatch.setattr(feedback_module, "FEEDBACK_DB_PATH", private_db)
+    monkeypatch.delenv("READWISE_FEEDBACK_DB_PATH", raising=False)
+
+    init_db()
+    assert get_feedback("legacy-book") == "read"
+    remove_feedback("legacy-book")
+    init_db()
+    assert get_feedback("legacy-book") is None
+
+
 def test_positive_feedback_affects_future_recommendations(sample_catalog):
     """Positive feedback boosts similar books in content recommendations."""
     model = ContentRecommender(sample_catalog)
@@ -148,6 +164,7 @@ def test_positive_feedback_affects_future_recommendations(sample_catalog):
     # Without liked feedback, search for picks matching 'Garden Guide' (0003)
     baseline = model.recommend(["0003"], top_k=5)
     baseline_ids = baseline.book_id.tolist()
+    baseline_score = float(baseline.loc[baseline.book_id.eq("0002"), "score"].max()) if "0002" in baseline_ids else 0.0
 
     # Now reader likes "0001" (Space Journey by Arthur Clarke)
     # This should boost "0002" (Space Odyssey by Arthur Clarke)
@@ -162,6 +179,8 @@ def test_positive_feedback_affects_future_recommendations(sample_catalog):
     assert not score_with_feedback.empty
     assert "0002" in with_positive_feedback.book_id.tolist()
     assert "feedback_boost" in with_positive_feedback.columns
+    assert float(score_with_feedback.iloc[0]) > baseline_score
+    assert float(with_positive_feedback.loc[with_positive_feedback.book_id.eq("0002"), "feedback_boost"].iloc[0]) > 0
 
 
 def test_positive_feedback_works_for_newer_books_without_ratings(sample_catalog):
@@ -177,6 +196,8 @@ def test_positive_feedback_works_for_newer_books_without_ratings(sample_catalog)
     top_book = recs.iloc[0]
     assert top_book.book_id == "NEW-02"
     assert top_book.author == "Contemporary Author"
+    assert int(top_book.rating_count) == 0
+    assert float(top_book.feedback_boost) > 0
     # NEW-01 itself should be excluded from recommendations (already liked/known)
     assert "NEW-01" not in recs.book_id.tolist()
 

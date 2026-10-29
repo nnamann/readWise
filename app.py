@@ -6,10 +6,10 @@ import plotly.express as px
 import streamlit as st
 
 from src.collaborative import ItemCollaborativeRecommender
-from src.config import DATA_DIR, OUTPUT_DIR, RAW_DIR
+from src.config import DATA_DIR, FEEDBACK_DB_PATH, OUTPUT_DIR, RAW_DIR
 from src.content_based import ContentRecommender
 from src.covers import clean_text_encoding, render_cover_html
-from src.catalog_search import exclude_seen_editions, search_catalog
+from src.catalog_search import exclude_seen_editions, filter_feedback_recommendations, search_catalog
 from src.data_loader import DatasetError, load_curated_dataset
 from src.feedback import (
     FEEDBACK_LABELS,
@@ -432,7 +432,8 @@ def render_feedback_control(book_id: str, title: str, key_suffix: str, compact: 
 
 
 def render_book_grid(frame: pd.DataFrame, catalog: pd.DataFrame, columns: int = 4,
-                     controls: bool = True, deduplicate: bool = False):
+                     controls: bool = True, deduplicate: bool = False,
+                     max_items: int | None = 16):
     if frame.empty:
         st.markdown("<div class='shelf-empty'>No books matched this view. Try a broader search or another title.</div>", unsafe_allow_html=True)
         return
@@ -441,7 +442,9 @@ def render_book_grid(frame: pd.DataFrame, catalog: pd.DataFrame, columns: int = 
         title_key = frame.title.fillna("").astype(str).str.casefold().str.replace(r"\s+", " ", regex=True).str.strip()
         author_key = frame.author.fillna("").astype(str).str.casefold().str.replace(r"\s+", " ", regex=True).str.strip()
         frame = frame.assign(_display_key=title_key + "::" + author_key).drop_duplicates("_display_key", keep="first")
-    frame = frame.head(16).reset_index(drop=True)
+    if max_items is not None:
+        frame = frame.head(max_items)
+    frame = frame.reset_index(drop=True)
     favorites = set(st.session_state.get("favorite_ids", []))
     grid_number = st.session_state.get("_book_grid_number", 0)
     st.session_state["_book_grid_number"] = grid_number + 1
@@ -523,6 +526,12 @@ catalog = get_catalog(books, ratings)
 content_model, collaborative_model = get_models(books, ratings)
 explicit_count = int(ratings.rating.gt(0).sum())
 popular = get_popular_catalog(catalog)
+feedback_map = get_all_feedback()
+liked_ids = {bid for bid, ftype in feedback_map.items() if ftype == "like"}
+disliked_ids = {bid for bid, ftype in feedback_map.items() if ftype == "dislike"}
+read_ids = {bid for bid, ftype in feedback_map.items() if ftype == "read"}
+suppressed_ids = disliked_ids | read_ids
+discover_popular = filter_feedback_recommendations(popular, catalog, feedback_map)
 
 st.session_state.setdefault("favorite_ids", [])
 st.session_state.setdefault("seed_ids", [])
@@ -573,31 +582,34 @@ if page == "Discover":
         with st.container(key="hero_side"):
             st.markdown("<div class='section-kicker'>A PLACE TO START · MOST RATED</div>", unsafe_allow_html=True)
             # Stable selection: the catalogue is sorted by explicit rating count, average, then title.
-            hero_book = popular.iloc[0]
-            render_cover(hero_book, large=True)
-            st.markdown(f"**{escape(str(hero_book.title))}**")
-            hero_author = escape(str(hero_book.author or "Author not listed"))
-            hero_votes = int(hero_book.get("rating_count", 0) or 0)
-            hero_average = hero_book.get("avg_rating")
-            if pd.notna(hero_average) and hero_votes:
-                st.caption(f"{hero_author} · ★ {float(hero_average):.1f} from {hero_votes:,} ratings")
+            if discover_popular.empty:
+                st.info("You’ve already marked every title here. Clear or change feedback on My Shelf to see more suggestions.")
             else:
-                st.caption(f"{hero_author} · a reader favourite in the catalogue")
-            st.button("Open this book", key="open_featured_book", on_click=open_book,
-                      args=(str(hero_book.book_id),), width="stretch")
+                hero_book = discover_popular.iloc[0]
+                render_cover(hero_book, large=True)
+                st.markdown(f"**{escape(str(hero_book.title))}**")
+                hero_author = escape(str(hero_book.author or "Author not listed"))
+                hero_votes = int(hero_book.get("rating_count", 0) or 0)
+                hero_average = hero_book.get("avg_rating")
+                if pd.notna(hero_average) and hero_votes:
+                    st.caption(f"{hero_author} · ★ {float(hero_average):.1f} from {hero_votes:,} ratings")
+                else:
+                    st.caption(f"{hero_author} · a reader favourite in the catalogue")
+                st.button("Open this book", key="open_featured_book", on_click=open_book,
+                          args=(str(hero_book.book_id),), width="stretch")
     st.markdown("<div class='section-kicker'>READER FAVOURITES</div>", unsafe_allow_html=True)
     st.header("Popular with readers")
     st.markdown("<div class='small-note'>Sorted by explicit rating count, with observed average rating as a tie-breaker.</div>", unsafe_allow_html=True)
-    render_book_grid(popular.head(8), catalog, controls=True, columns=4, deduplicate=True)
+    render_book_grid(discover_popular.head(8), catalog, controls=True, columns=4, deduplicate=True)
     st.button("See the full collection →", key="browse_more", on_click=go_to, args=("Explore",))
-    quiet = get_quieter_catalog(catalog)
+    quiet = filter_feedback_recommendations(get_quieter_catalog(catalog), catalog, feedback_map)
     if not quiet.empty:
         with st.container(key="quiet_section"):
             st.markdown("<div class='section-kicker'>A QUIETER CORNER</div>", unsafe_allow_html=True)
             st.header("Well-rated, less often seen")
             st.markdown("These titles have 10–80 explicit ratings and are ordered by their observed average rating.")
             render_book_grid(quiet, catalog, controls=True, columns=4, deduplicate=True)
-    recent_shelf = get_recent_catalog(catalog)
+    recent_shelf = filter_feedback_recommendations(get_recent_catalog(catalog), catalog, feedback_map)
     if not recent_shelf.empty:
         with st.container(key="recent_section"):
             st.markdown("<div class='section-kicker'>RECENT ADDITIONS & CONTEMPORARY READS</div>", unsafe_allow_html=True)
@@ -682,6 +694,27 @@ if page == "Discover":
             st.header(shelf_heading)
             render_book_grid(similar.head(8), catalog, controls=True, columns=4, deduplicate=True)
 
+    st.divider()
+    st.markdown("<div class='section-kicker'>YOUR READING HISTORY</div>", unsafe_allow_html=True)
+    st.header("Already read")
+    if not active_reads:
+        st.caption("Books you mark as already read will be collected here.")
+    else:
+        read_books = catalog.loc[
+            catalog.book_id.astype(str).isin(active_reads), ["title", "author", "book_id"]
+        ].copy()
+        known_read_ids = set(read_books.book_id.astype(str))
+        missing_rows = pd.DataFrame([
+            {"title": "Book details unavailable", "author": f"Book ID {book_id}",
+             "book_id": book_id, "cover_url": ""}
+            for book_id in sorted(active_reads - known_read_ids)
+        ])
+        read_list = pd.concat([read_books, missing_rows], ignore_index=True)
+        read_list["book_id"] = read_list.book_id.astype(str)
+        read_list = read_list.sort_values(["title", "author", "book_id"], kind="stable")
+        st.caption(f"{len(read_list):,} book(s) marked as already read")
+        render_book_grid(read_list, catalog, columns=4, controls=True, max_items=None)
+
 
 elif page == "Browse":
     author_focus = str(st.session_state.get("browse_author", "")).strip()
@@ -753,7 +786,7 @@ elif page == "My Shelf":
     with tab_feedback:
         st.markdown("### Saved Reader Feedback")
         st.markdown(
-            "ReadWise stores your feedback locally in a SQLite database (`data/feedback.db`). "
+            f"ReadWise stores your feedback locally in a SQLite database (`{FEEDBACK_DB_PATH}`). "
             "Your feedback persists across app restarts, is never uploaded or shared, and is kept strictly "
             "separate from the original Book-Crossing ratings dataset."
         )
@@ -830,18 +863,12 @@ elif page == "For you":
     st.title("More books you’ll love.")
     st.markdown("Choose books you’ve enjoyed. ReadWise will use them as clues for your next reading list.")
 
-    feedback_map = get_all_feedback()
-    liked_ids = {bid for bid, ftype in feedback_map.items() if ftype == "like"}
-    disliked_ids = {bid for bid, ftype in feedback_map.items() if ftype == "dislike"}
-    read_ids = {bid for bid, ftype in feedback_map.items() if ftype == "read"}
-    suppressed_ids = disliked_ids | read_ids
-
     if feedback_map:
         fb_sum = get_feedback_summary()
         st.info(
             f"💡 **Feedback loop active:** {fb_sum['like']} liked book(s) boosting recommendations · "
             f"{fb_sum['dislike'] + fb_sum['read']} book(s) suppressed (not interested or read). "
-            "Saved locally in SQLite (`data/feedback.db`)."
+            f"Saved locally in SQLite (`{FEEDBACK_DB_PATH}`)."
         )
         with st.expander("Review or clear your saved feedback", expanded=False):
             st.caption("Feedback is stored locally on this machine and never written to original Book-Crossing ratings.")
@@ -1050,7 +1077,7 @@ elif page == "How it works":
         st.markdown("**Book details:** TF-IDF and cosine similarity compare title, author and publisher text. This is catalogue similarity, not plot or mood understanding.")
         st.markdown("**Reader behaviour:** Item-based cosine similarity uses nonzero ratings after centering each reader around their own mean. It requires enough overlap between books.")
         st.markdown("**Blend:** Candidate scores are normalized within each source and combined using the selected book-detail weight. If one source has no candidates, the available source is used.")
-        st.markdown("**Feedback loop:** Reader feedback is stored locally in SQLite (`data/feedback.db`) and kept strictly separate from the source Book-Crossing data. Positive feedback boosts similar titles using content TF-IDF vectors (allowing even brand-new books with zero rating history to shape recommendations). Negative and already-read feedback suppresses titles and matching editions from future lists.")
+        st.markdown(f"**Feedback loop:** Reader feedback is stored locally in SQLite (`{FEEDBACK_DB_PATH}`) and kept strictly separate from the source Book-Crossing data. Positive feedback boosts similar titles using content TF-IDF vectors (allowing even brand-new books with zero rating history to shape recommendations). Negative and already-read feedback suppresses titles and matching editions from future lists.")
         st.markdown("**Offline evaluation:** Ratings are split per user before fitting the rating-based model. See Results for the actual cohort, relevance rule, metrics and limitations.")
     st.caption("The source is the old, sparse Book-Crossing collection. Recommendations can be empty when the available evidence is too thin.")
 
